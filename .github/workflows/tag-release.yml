@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - main
+
     paths:
+      - ".github/workflows/tag-release.yml"
       - "**.go"
       - "**/go.mod"
       - "**/go.sum"
