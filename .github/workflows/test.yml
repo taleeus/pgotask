@@ -5,6 +5,7 @@ on:
     paths-ignore:
       - .github/**
       - go.sum
+      - README.md
 
 jobs:
   test:
