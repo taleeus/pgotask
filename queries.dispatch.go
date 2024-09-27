@@ -52,6 +52,7 @@ func findPendingTasks(ctx context.Context, tx *sql.Tx) ([]Task, error) {
 			&task.Type,
 			&task.TypeVersion,
 			&task.Payload,
+			&task.Idempotent,
 			&task.DispatchAfter,
 			&task.CompletedAt,
 			&task.CreatedAt,

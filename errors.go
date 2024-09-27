@@ -29,6 +29,7 @@ var ErrUnhandledTaskType = errors.New("handler for task type not found")
 var ErrPushFailure = errors.New("couldn't push failure")
 var ErrRetryCooldown = errors.New("couldn't set retry cooldown")
 var ErrMarkCompleted = errors.New("couldn't mark completed task")
+var ErrDeleteDuplicates = errors.New("couldn't delete duplicate idempotent tasks")
 
 /// Schedule task
 

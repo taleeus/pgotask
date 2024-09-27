@@ -17,7 +17,8 @@ var initTaskTableQuery = `
 CREATE TABLE IF NOT EXISTS ` + table[Task]() + ` (
 	` + column[Task]("id") + ` UUID NOT NULL PRIMARY KEY DEFAULT uuid_generate_v4(),
 	` + column[Task]("type") + ` TEXT NOT NULL,
-	` + column[Task]("type_version") + ` INT DEFAULT 0,
+	` + column[Task]("type_version") + ` INT NOT NULL DEFAULT 0,
+	` + column[Task]("idempotent") + ` BOOLEAN NOT NULL DEFAULT FALSE,
 	` + column[Task]("payload") + ` JSON,
 	` + column[Task]("dispatch_after") + ` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	` + column[Task]("completed_at") + ` TIMESTAMP,
@@ -66,6 +67,11 @@ func initSchema(ctx context.Context, db *sql.DB) error {
 
 			if strings.Contains(err.Error(), "23505") {
 				slog.WarnContext(ctx, "Type already exists; continuing")
+				continue
+			}
+
+			if strings.Contains(err.Error(), "42P07") {
+				slog.WarnContext(ctx, "Relation already exists; continuing")
 				continue
 			}
 

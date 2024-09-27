@@ -13,6 +13,7 @@ type Task struct {
 	Type          string          `db:"type"`
 	TypeVersion   int             `db:"type_version"`
 	Payload       json.RawMessage `db:"payload"`
+	Idempotent    bool            `db:"idempotent"`
 	DispatchAfter sql.NullTime    `db:"dispatch_after"`
 	CompletedAt   sql.NullTime    `db:"completed_at"`
 	CreatedAt     time.Time       `db:"created_at"`

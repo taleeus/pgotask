@@ -1,6 +1,7 @@
 package pgotask
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -22,7 +24,7 @@ const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
 
 type HandlerFn func(context.Context, *sql.Tx, json.RawMessage) error
 
-type scheduler struct {
+type Scheduler struct {
 	running bool
 
 	db       *sql.DB
@@ -36,8 +38,8 @@ type scheduler struct {
 // Further configuration can be done in fluent-API style.
 //
 // To see default configuration, check constants with `_DEFAULT` postfix.
-func NewScheduler(db *sql.DB) *scheduler {
-	return &scheduler{
+func NewScheduler(db *sql.DB) *Scheduler {
+	return &Scheduler{
 		db:       db,
 		handlers: make(map[string]HandlerFn),
 
@@ -47,13 +49,13 @@ func NewScheduler(db *sql.DB) *scheduler {
 }
 
 // Cooldown overrides the default cooldown between loops
-func (s *scheduler) Cooldown(cooldown time.Duration) *scheduler {
+func (s *Scheduler) Cooldown(cooldown time.Duration) *Scheduler {
 	s.cooldown = cooldown
 	return s
 }
 
 // RetryAfter overrides the default retry cooldown set on tasks after failure
-func (s *scheduler) RetryAfter(retryCooldown time.Duration) *scheduler {
+func (s *Scheduler) RetryAfter(retryCooldown time.Duration) *Scheduler {
 	s.retryCooldown = retryCooldown
 	return s
 }
@@ -64,7 +66,7 @@ func (s *scheduler) RetryAfter(retryCooldown time.Duration) *scheduler {
 //
 // Handlers can check context cancellation to know if an error happened
 // during the dispatch loop on some other task.
-func (s *scheduler) Handler(taskType string, handler HandlerFn) *scheduler {
+func (s *Scheduler) Handler(taskType string, handler HandlerFn) *Scheduler {
 	s.handlers[taskType] = handler
 	return s
 }
@@ -74,7 +76,7 @@ func (s *scheduler) Handler(taskType string, handler HandlerFn) *scheduler {
 // the method exits with an error immediately; otherwise, the dispatch loop starts in the background.
 //
 // To stop the loop manually, you need to cancel the context.
-func (s *scheduler) Run(ctx context.Context) error {
+func (s *Scheduler) Run(ctx context.Context) error {
 	if s.running {
 		slog.WarnContext(ctx, "Scheduler already running")
 		return ErrAlreadyRunning
@@ -95,11 +97,12 @@ type TaskArgs struct {
 	TaskType        string          `json:"taskType"`
 	TaskTypeVersion int             `json:"taskTypeVersion"`
 	Payload         json.RawMessage `json:"payload"`
+	Idempotent      bool            `json:"idempotent"`
 	DispatchAfter   time.Duration   `json:"dispatchAfter"`
 }
 
 // ScheduleTask schedules a task (duh)
-func (s *scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
+func (s *Scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
 	if !s.running {
 		slog.WarnContext(ctx, "Scheduler is not running")
 		return ErrNotRunning
@@ -109,6 +112,7 @@ func (s *scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
 		task.TaskType,
 		task.TaskTypeVersion,
 		task.Payload,
+		task.Idempotent,
 		task.DispatchAfter,
 	); err != nil {
 		slog.ErrorContext(ctx, "Task scheduling failed",
@@ -122,7 +126,7 @@ func (s *scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
 	return nil
 }
 
-func (s *scheduler) dispatchLoop(ctx context.Context) {
+func (s *Scheduler) dispatchLoop(ctx context.Context) {
 	slog.DebugContext(ctx, "First dispatch")
 	if err := s.dispatch(ctx); err != nil {
 		slog.ErrorContext(ctx, "First dispatch encountered errors",
@@ -166,7 +170,7 @@ func (s *scheduler) dispatchLoop(ctx context.Context) {
 	}
 }
 
-func (s scheduler) dispatch(ctx context.Context) error {
+func (s Scheduler) dispatch(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return errors.Join(ErrTxCreation, err)
@@ -181,8 +185,20 @@ func (s scheduler) dispatch(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(ErrQueryPending, err)
 	}
-
 	slog.DebugContext(ctx, "Fetched pending tasks",
+		slog.Any("tasks", tasks),
+	)
+
+	tasks = slices.CompactFunc(tasks, func(t1, t2 Task) bool {
+		if !t1.Idempotent || t2.Idempotent {
+			return false
+		}
+
+		return t1.Type == t2.Type &&
+			t1.TypeVersion == t2.TypeVersion &&
+			bytes.Compare(t1.Payload, t2.Payload) == 0
+	})
+	slog.DebugContext(ctx, "Filtered tasks",
 		slog.Any("tasks", tasks),
 	)
 
@@ -222,6 +238,17 @@ func (s scheduler) dispatch(ctx context.Context) error {
 						fmt.Errorf("%w (id: %s)", ErrMarkCompleted, task.ID),
 						err,
 					)
+				}
+
+				if task.Idempotent {
+					if err := deleteIdempotent(dispatchCtx, tx,
+						task.Type,
+						task.TypeVersion,
+						task.Payload,
+						task.ID,
+					); err != nil {
+						return fmt.Errorf("%w (id: %s)", ErrDeleteDuplicates, task.ID)
+					}
 				}
 			}
 
