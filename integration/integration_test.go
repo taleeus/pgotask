@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"log"
 	"log/slog"
@@ -31,28 +30,18 @@ type counterPayload struct {
 	Increment int `json:"increment"`
 }
 
-func incrementCounter(_ context.Context, _ *sql.Tx, data json.RawMessage) error {
-	var payload counterPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
-	}
-
+func incrementCounter(ctx context.Context, payload counterPayload) error {
 	_COUNTER.Add(int32(payload.Increment))
 	return nil
 }
 
-func incrementCounterIdempotent(_ context.Context, _ *sql.Tx, data json.RawMessage) error {
-	var payload counterPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
-	}
-
+func incrementCounterIdempotent(ctx context.Context, payload counterPayload) error {
 	_COUNTER_IDEMPOTENT.Add(int32(payload.Increment))
 	return nil
 }
 
-var ctx = context.Background()
 var scheduler *pgotask.Scheduler
+var ctx = context.Background()
 
 func TestMain(m *testing.M) {
 	// init
@@ -84,20 +73,20 @@ func TestMain(m *testing.M) {
 
 	s1 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s2 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s3 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s4 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 
 	var runGroup errgroup.Group
 	runGroup.Go(func() error {
