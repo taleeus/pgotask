@@ -38,7 +38,7 @@ func TypedNoDB[T any](handler func(context.Context, T) error) HandlerFn {
 }
 
 // Simple builds an handler without DB connection nor payload
-func Simple[T any](handler func(context.Context) error) HandlerFn {
+func Simple(handler func(context.Context) error) HandlerFn {
 	return func(ctx context.Context, _ DB, _ json.RawMessage) error {
 		return handler(ctx)
 	}
