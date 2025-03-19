@@ -22,6 +22,7 @@ import (
 
 var _COUNTER = atomic.Int32{}
 var _COUNTER_IDEMPOTENT = atomic.Int32{}
+var _COUNTER_NOPAYLOAD = atomic.Int32{}
 
 const TASK_TYPE = "COUNTER"
 const TASK_TYPE_IDEMPOTENT = TASK_TYPE + ".IDEMPOTENT"
@@ -31,18 +32,23 @@ type counterPayload struct {
 	Increment int `json:"increment"`
 }
 
-func incrementCounter(payload counterPayload) error {
+func incrementCounter(ctx context.Context, payload counterPayload) error {
 	_COUNTER.Add(int32(payload.Increment))
 	return nil
 }
 
-func incrementCounterIdempotent(payload counterPayload) error {
+func incrementCounterIdempotent(ctx context.Context, payload counterPayload) error {
 	_COUNTER_IDEMPOTENT.Add(int32(payload.Increment))
 	return nil
 }
 
-var ctx = context.Background()
+func incrementCounterNoPayload(ctx context.Context) error {
+	_COUNTER_NOPAYLOAD.Add(1)
+	return nil
+}
+
 var scheduler *pgotask.Scheduler
+var ctx = context.Background()
 
 func TestMain(m *testing.M) {
 	// init
@@ -74,20 +80,24 @@ func TestMain(m *testing.M) {
 
 	s1 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_NOPAYLOAD, pgotask.Simple(incrementCounterNoPayload)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s2 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_NOPAYLOAD, pgotask.Simple(incrementCounterNoPayload)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s3 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_NOPAYLOAD, pgotask.Simple(incrementCounterNoPayload)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 	s4 := pgotask.NewScheduler(stdlib.OpenDBFromPool(pool)).
 		Cooldown(time.Second).
-		Handler(TASK_TYPE, incrementCounter).
-		Handler(TASK_TYPE_IDEMPOTENT, incrementCounterIdempotent)
+		Handler(TASK_TYPE, pgotask.TypedNoDB(incrementCounter)).
+		Handler(TASK_TYPE_NOPAYLOAD, pgotask.Simple(incrementCounterNoPayload)).
+		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 
 	var runGroup errgroup.Group
 	runGroup.Go(func() error {
@@ -154,7 +164,7 @@ func TestIdempotent(t *testing.T) {
 		}
 
 		if err := scheduler.ScheduleTask(ctx, pgotask.TaskArgs{
-			TaskType:      TASK_TYPE + ".IDEMPOTENT",
+			TaskType:      TASK_TYPE_IDEMPOTENT,
 			Payload:       data,
 			Idempotent:    true,
 			DispatchAfter: time.Second * time.Duration(i+1),
@@ -166,5 +176,23 @@ func TestIdempotent(t *testing.T) {
 	time.Sleep(time.Second * time.Duration(tasksNum+2))
 	if val := _COUNTER_IDEMPOTENT.Load(); int(val) != 1 {
 		t.Errorf("counter is not 1, but %d", val)
+	}
+}
+
+func TestNoPayload(t *testing.T) {
+	tasksNum := 5
+	for i := range tasksNum {
+		if err := scheduler.ScheduleTask(ctx, pgotask.TaskArgs{
+			TaskType:      TASK_TYPE_NOPAYLOAD,
+			Idempotent:    true,
+			DispatchAfter: time.Second * time.Duration(i+1),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	time.Sleep(time.Second * time.Duration(tasksNum+2))
+	if val := _COUNTER_NOPAYLOAD.Load(); int(val) != tasksNum {
+		t.Errorf("counter is not %d, but %d", tasksNum, val)
 	}
 }

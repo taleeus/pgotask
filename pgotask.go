@@ -22,7 +22,12 @@ const VERSION = "v1"
 const COOLDOWN_DEFAULT = time.Duration(time.Minute)
 const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
 
-type HandlerFn func(context.Context, *sql.Tx, json.RawMessage) error
+type DB interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+type HandlerFn func(context.Context, DB, json.RawMessage) error
 
 type Scheduler struct {
 	running bool
