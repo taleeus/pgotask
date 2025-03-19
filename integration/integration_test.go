@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"log"
 	"log/slog"
@@ -26,27 +25,18 @@ var _COUNTER_IDEMPOTENT = atomic.Int32{}
 
 const TASK_TYPE = "COUNTER"
 const TASK_TYPE_IDEMPOTENT = TASK_TYPE + ".IDEMPOTENT"
+const TASK_TYPE_NOPAYLOAD = TASK_TYPE + ".NOPAYLOAD"
 
 type counterPayload struct {
 	Increment int `json:"increment"`
 }
 
-func incrementCounter(_ context.Context, _ *sql.Tx, data json.RawMessage) error {
-	var payload counterPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
-	}
-
+func incrementCounter(payload counterPayload) error {
 	_COUNTER.Add(int32(payload.Increment))
 	return nil
 }
 
-func incrementCounterIdempotent(_ context.Context, _ *sql.Tx, data json.RawMessage) error {
-	var payload counterPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
-	}
-
+func incrementCounterIdempotent(payload counterPayload) error {
 	_COUNTER_IDEMPOTENT.Add(int32(payload.Increment))
 	return nil
 }
