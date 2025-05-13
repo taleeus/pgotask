@@ -21,6 +21,7 @@ const VERSION = "v1"
 
 const COOLDOWN_DEFAULT = time.Duration(time.Minute)
 const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
+const TASK_DEADLINE_DEFAULT = time.Minute
 
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -37,6 +38,7 @@ type Scheduler struct {
 
 	cooldown      time.Duration
 	retryCooldown time.Duration
+	taskDeadline  time.Duration
 }
 
 // NewScheduler returns an initialized scheduler.
@@ -50,6 +52,7 @@ func NewScheduler(db *sql.DB) *Scheduler {
 
 		cooldown:      COOLDOWN_DEFAULT,
 		retryCooldown: RETRY_COOLDOWN_DEFAULT,
+		taskDeadline:  TASK_DEADLINE_DEFAULT,
 	}
 }
 
@@ -62,6 +65,12 @@ func (s *Scheduler) Cooldown(cooldown time.Duration) *Scheduler {
 // RetryAfter overrides the default retry cooldown set on tasks after failure
 func (s *Scheduler) RetryAfter(retryCooldown time.Duration) *Scheduler {
 	s.retryCooldown = retryCooldown
+	return s
+}
+
+// TaskDeadline overrides the default task deadline
+func (s *Scheduler) TaskDeadline(deadline time.Duration) *Scheduler {
+	s.taskDeadline = deadline
 	return s
 }
 
@@ -219,7 +228,10 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				return fmt.Errorf("%w (%s)", ErrUnhandledTaskType, task.Type)
 			}
 
-			if err := handler(dispatchCtx, tx, task.Payload); err != nil {
+			deadlineCtx, cancel := context.WithTimeoutCause(dispatchCtx, s.taskDeadline, ErrExcededTimeline)
+			defer cancel()
+
+			if err := handler(deadlineCtx, tx, task.Payload); err != nil {
 				slog.DebugContext(dispatchCtx, "Handler failed task",
 					slog.Any("task", task),
 					slog.String("err", err.Error()),
@@ -246,6 +258,7 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				}
 
 				if task.Idempotent {
+					slog.DebugContext(dispatchCtx, "Task is idempotent: deleting duplicate tasks")
 					if err := deleteIdempotent(dispatchCtx, tx,
 						task.Type,
 						task.TypeVersion,
