@@ -58,9 +58,9 @@ func findPendingTasks(ctx context.Context, tx *sql.Tx, version sql.NullString) (
 			&task.Payload,
 			&task.CreatedAt,
 			&task.UpdatedAt,
-			&task.DispatchAfter,
 			&task.Priority,
 			&task.Retries,
+			&task.DispatchAfter,
 		); err != nil {
 			return nil, errors.Join(ErrScanRow, err)
 		}

@@ -139,9 +139,14 @@ func (s *Scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
 		return ErrNotRunning
 	}
 
+	var version sql.NullString
+	if s.version != "" {
+		version = sql.NullString{String: s.version, Valid: true}
+	}
+
 	if err := scheduleTask(ctx, s.db,
 		task.TaskType,
-		s.version,
+		version,
 		task.Payload,
 		task.Idempotent,
 		task.DispatchAfter,
