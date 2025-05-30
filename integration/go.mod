@@ -1,4 +1,4 @@
-module github.com/taleeus/pgotask/v2integration
+module github.com/taleeus/pgotask/v2/integration
 
 go 1.23.0
 
