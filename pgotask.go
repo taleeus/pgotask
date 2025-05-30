@@ -17,10 +17,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const VERSION = "v1"
+const VERSION = "v2"
 
 const COOLDOWN_DEFAULT = time.Duration(time.Minute)
 const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
+const TASK_DEADLINE_DEFAULT = time.Minute
+const TASK_RETRIES_DEFAULT = 5
 
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -37,6 +39,9 @@ type Scheduler struct {
 
 	cooldown      time.Duration
 	retryCooldown time.Duration
+	taskDeadline  time.Duration
+	retries       int
+	version       string
 }
 
 // NewScheduler returns an initialized scheduler.
@@ -50,6 +55,8 @@ func NewScheduler(db *sql.DB) *Scheduler {
 
 		cooldown:      COOLDOWN_DEFAULT,
 		retryCooldown: RETRY_COOLDOWN_DEFAULT,
+		taskDeadline:  TASK_DEADLINE_DEFAULT,
+		retries:       TASK_RETRIES_DEFAULT,
 	}
 }
 
@@ -62,6 +69,25 @@ func (s *Scheduler) Cooldown(cooldown time.Duration) *Scheduler {
 // RetryAfter overrides the default retry cooldown set on tasks after failure
 func (s *Scheduler) RetryAfter(retryCooldown time.Duration) *Scheduler {
 	s.retryCooldown = retryCooldown
+	return s
+}
+
+// TaskDeadline overrides the default task deadline
+func (s *Scheduler) TaskDeadline(deadline time.Duration) *Scheduler {
+	s.taskDeadline = deadline
+	return s
+}
+
+// Version sets the filter for versioned tasks.
+// The idiomatic way to use this is to pass the current Go package version.
+func (s *Scheduler) Version(version string) *Scheduler {
+	s.version = version
+	return s
+}
+
+// Retries overrides the default task retries
+func (s *Scheduler) Retries(retries int) *Scheduler {
+	s.retries = retries
 	return s
 }
 
@@ -115,7 +141,7 @@ func (s *Scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
 
 	if err := scheduleTask(ctx, s.db,
 		task.TaskType,
-		task.TaskTypeVersion,
+		s.version,
 		task.Payload,
 		task.Idempotent,
 		task.DispatchAfter,
@@ -186,7 +212,12 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 		return errors.Join(ErrQueryLock, err)
 	}
 
-	tasks, err := findPendingTasks(ctx, tx)
+	var version sql.NullString
+	if s.version != "" {
+		version = sql.NullString{String: s.version, Valid: true}
+	}
+
+	tasks, err := findPendingTasks(ctx, tx, version)
 	if err != nil {
 		return errors.Join(ErrQueryPending, err)
 	}
@@ -194,14 +225,12 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 		slog.Any("tasks", tasks),
 	)
 
-	tasks = slices.CompactFunc(tasks, func(t1, t2 Task) bool {
+	tasks = slices.CompactFunc(tasks, func(t1, t2 TaskScheduled) bool {
 		if !t1.Idempotent || t2.Idempotent {
 			return false
 		}
 
-		return t1.Type == t2.Type &&
-			t1.TypeVersion == t2.TypeVersion &&
-			bytes.Compare(t1.Payload, t2.Payload) == 0
+		return t1.Type == t2.Type && bytes.Compare(t1.Payload, t2.Payload) == 0
 	})
 	slog.DebugContext(ctx, "Filtered tasks",
 		slog.Any("tasks", tasks),
@@ -219,38 +248,55 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				return fmt.Errorf("%w (%s)", ErrUnhandledTaskType, task.Type)
 			}
 
-			if err := handler(dispatchCtx, tx, task.Payload); err != nil {
+			deadlineCtx, cancel := context.WithTimeoutCause(dispatchCtx, s.taskDeadline, ErrExcededTimeline)
+			defer cancel()
+
+			if err := handler(deadlineCtx, tx, task.Payload); err != nil {
 				slog.DebugContext(dispatchCtx, "Handler failed task",
 					slog.Any("task", task),
 					slog.String("err", err.Error()),
 					slog.Duration("retryCooldown", s.retryCooldown),
 				)
 
-				if err := pushFailure(dispatchCtx, tx, task.ID, err.Error()); err != nil {
-					return fmt.Errorf("%w (id: %s)", ErrPushFailure, task.ID)
-				}
+				switch {
+				case task.Retries >= s.retries:
+					if err := pushFailure(dispatchCtx, tx, task.Task, err.Error()); err != nil {
+						return fmt.Errorf("%w (id: %s)", ErrPushFailure, task.ID)
+					}
 
-				if err := setRetryCooldown(dispatchCtx, tx, task.ID, s.retryCooldown); err != nil {
-					return fmt.Errorf("%w (id: %s)", ErrRetryCooldown, task.ID)
+					if err := deleteTask(dispatchCtx, tx, task.ID); err != nil {
+						return fmt.Errorf("%w (id: %s)", ErrDeleteScheduled, task.ID)
+					}
+
+				default:
+					if err := setRetryCooldown(dispatchCtx, tx, task.ID, s.retryCooldown); err != nil {
+						return fmt.Errorf("%w (id: %s)", ErrRetryCooldown, task.ID)
+					}
 				}
 			} else {
 				slog.DebugContext(dispatchCtx, "Handler completed task",
 					slog.Any("task", task),
 				)
 
-				if err := markCompleted(dispatchCtx, tx, task.ID); err != nil {
+				if err := markCompleted(dispatchCtx, tx, task.Task); err != nil {
 					return errors.Join(ErrAbortDispatch,
 						fmt.Errorf("%w (id: %s)", ErrMarkCompleted, task.ID),
 						err,
 					)
 				}
 
+				if err := deleteTask(dispatchCtx, tx, task.ID); err != nil {
+					return errors.Join(ErrAbortDispatch,
+						fmt.Errorf("%w (id: %s)", ErrDeleteScheduled, task.ID),
+						err,
+					)
+				}
+
 				if task.Idempotent {
+					slog.DebugContext(dispatchCtx, "Task is idempotent: deleting duplicate tasks")
 					if err := deleteIdempotent(dispatchCtx, tx,
 						task.Type,
-						task.TypeVersion,
 						task.Payload,
-						task.ID,
 					); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrDeleteDuplicates, task.ID)
 					}

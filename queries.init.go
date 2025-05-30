@@ -13,46 +13,70 @@ CREATE EXTENSION IF NOT EXISTS "moddatetime";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 `
 
-var initTaskTableQuery = `
-CREATE TABLE IF NOT EXISTS ` + table[Task]() + ` (
-	` + column[Task]("id") + ` UUID NOT NULL PRIMARY KEY DEFAULT uuid_generate_v4(),
-	` + column[Task]("type") + ` TEXT NOT NULL,
-	` + column[Task]("type_version") + ` INT NOT NULL DEFAULT 0,
-	` + column[Task]("idempotent") + ` BOOLEAN NOT NULL DEFAULT FALSE,
-	` + column[Task]("payload") + ` JSON,
-	` + column[Task]("dispatch_after") + ` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	` + column[Task]("completed_at") + ` TIMESTAMP,
-	` + column[Task]("created_at") + ` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	` + column[Task]("updated_at") + ` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+var initTaskScheduledTableQuery = `
+CREATE COLLATION IF NOT EXISTS en_natural (
+  LOCALE = 'en-US-u-kn-true',
+  PROVIDER = 'icu'
 );
 
-CREATE INDEX IF NOT EXISTS idx_` + table[Task]() + `_pending ON ` + table[Task]() + ` (` + join(columns[Task](false,
-	"type",
-	"type_version",
-	"dispatch_after",
-)) + `)
-WHERE
-	` + column[Task]("completed_at") + ` IS NULL AND
-	` + column[Task]("dispatch_after") + ` IS NOT NULL;
+CREATE TABLE IF NOT EXISTS task_scheduled_v2 (
+	id 				UUID 		NOT NULL 	DEFAULT uuid_generate_v4()	PRIMARY KEY,
+	type 			TEXT 		NOT NULL,
+	version			TEXT 					COLLATE en_natural,
+	idempotent 		BOOLEAN 	NOT NULL 	DEFAULT FALSE,
+	payload 		JSONB,
+	created_at 		TIMESTAMP	NOT NULL 	DEFAULT CURRENT_TIMESTAMP,
+	updated_at 		TIMESTAMP 	NOT NULL 	DEFAULT CURRENT_TIMESTAMP,
 
-CREATE OR REPLACE TRIGGER mdt_` + table[Task]() + `
-	BEFORE UPDATE ON ` + table[Task]() + `
+	priority		INT 		NOT NULL 	DEFAULT 0,
+	retries			INT 		NOT NULL 	DEFAULT 0,
+	dispatch_after 	TIMESTAMP	NOT NULL 	DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_scheduled_v2_pending
+ON task_scheduled_v2 (
+	type,
+	version,
+	dispatch_after
+);
+
+CREATE OR REPLACE TRIGGER mdt_task_scheduled_v2
+	BEFORE UPDATE ON task_scheduled_v2
 	FOR EACH ROW
-	EXECUTE PROCEDURE moddatetime (` + column[Task]("updated_at") + `);
+	EXECUTE PROCEDURE moddatetime (updated_at);
 `
 
-var initTaskFailureTableQuery = `
-CREATE TABLE IF NOT EXISTS ` + table[TaskFailure]() + ` (
-	` + column[TaskFailure]("task_id") + ` UUID NOT NULL REFERENCES ` + table[Task]() + `(` + column[Task]("id") + `),
-	` + column[TaskFailure]("message") + ` TEXT NOT NULL,
-	` + column[TaskFailure]("created_at") + ` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+var initTaskDeadTableQuery = `
+CREATE TABLE IF NOT EXISTS task_dead_v2 (
+	id 				UUID 		NOT NULL 	PRIMARY KEY,
+	type 			TEXT 		NOT NULL,
+	version			TEXT 					COLLATE en_natural,
+	idempotent 		BOOLEAN 	NOT NULL,
+	payload 		JSON,
+	created_at 		TIMESTAMP	NOT NULL,
+	updated_at 		TIMESTAMP 	NOT NULL,
 
-	PRIMARY KEY (` + column[TaskFailure]("task_id") + `, ` + column[TaskFailure]("created_at") + `)
+	error 			TEXT 		NOT NULL,
+	failed_at 		TIMESTAMP 	NOT NULL 	DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+var initTaskCompletedTableQuery = `
+CREATE TABLE IF NOT EXISTS task_completed_v2 (
+	id 				UUID 		NOT NULL	PRIMARY KEY,
+	type 			TEXT 		NOT NULL,
+	version			TEXT 					COLLATE en_natural,
+	idempotent 		BOOLEAN 	NOT NULL,
+	payload 		JSON,
+	created_at 		TIMESTAMP	NOT NULL,
+	updated_at 		TIMESTAMP 	NOT NULL,
+
+	completed_at 	TIMESTAMP 	NOT NULL 	DEFAULT CURRENT_TIMESTAMP
 );
 `
 
 func initSchema(ctx context.Context, db *sql.DB) error {
-	query := initExtensionsQuery + initTaskTableQuery + initTaskFailureTableQuery
+	query := initExtensionsQuery + initTaskScheduledTableQuery + initTaskDeadTableQuery + initTaskCompletedTableQuery
 	for _, stmt := range strings.Split(query, ";") {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			slog.ErrorContext(ctx, "Statement failed",
