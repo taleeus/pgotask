@@ -12,21 +12,63 @@ import (
 )
 
 var pushFailureQuery = `
-INSERT INTO ` + table[TaskFailure]() + ` (` + join(columns[TaskFailure](false,
-	"task_id",
-	"message",
-)) + `)
-VALUES ($1, $2)
+INSERT INTO task_dead_v2 (
+	id,
+	type,
+	version,
+	idempotent,
+	payload,
+	created_at,
+	updated_at,
+	error
+)
+VALUES (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5,
+	$6,
+	$7,
+	$8
+)
 `
 
-func pushFailure(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, message string) error {
+var deleteTaskQuery = `
+DELETE FROM task_scheduled_v2
+WHERE id = $1
+`
+
+func pushFailure(ctx context.Context, tx *sql.Tx, task Task, message string) error {
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", pushFailureQuery),
-		slog.String("$1", taskID.String()),
-		slog.String("$2", message),
+		slog.Any("task", task),
+		slog.String("message", message),
 	)
 
-	if _, err := tx.ExecContext(ctx, pushFailureQuery, taskID, message); err != nil {
+	if _, err := tx.ExecContext(ctx, pushFailureQuery,
+		task.ID,
+		task.Type,
+		task.Version,
+		task.Idempotent,
+		task.Payload,
+		task.CreatedAt,
+		task.UpdatedAt,
+		message,
+	); err != nil {
+		return errors.Join(ErrExecQuery, err)
+	}
+
+	return nil
+}
+
+func deleteTask(ctx context.Context, tx *sql.Tx, id uuid.UUID) error {
+	slog.DebugContext(ctx, "Executing query",
+		slog.String("query", deleteTaskQuery),
+		slog.String("id", id.String()),
+	)
+
+	if _, err := tx.ExecContext(ctx, deleteTaskQuery, id); err != nil {
 		return errors.Join(ErrExecQuery, err)
 	}
 
@@ -34,9 +76,11 @@ func pushFailure(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, message stri
 }
 
 var setRetryCooldownQuery = `
-UPDATE ` + table[Task]() + `
-SET ` + column[Task]("dispatch_after") + ` = $2
-WHERE ` + column[Task]("id") + ` = $1
+UPDATE task_scheduled_v2
+SET
+	dispatch_after = $2,
+	retries = retries + 1
+WHERE id = $1
 `
 
 func setRetryCooldown(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, cooldown time.Duration) error {
@@ -55,18 +99,40 @@ func setRetryCooldown(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, cooldow
 }
 
 var markCompletedQuery = `
-UPDATE ` + table[Task]() + `
-SET ` + column[Task]("completed_at") + ` = NOW()
-WHERE ` + column[Task]("id") + ` = $1
+INSERT INTO task_completed_v2 (
+	id,
+	type,
+	version,
+	idempotent,
+	payload,
+	created_at,
+	updated_at
+) VALUES (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5,
+	$6,
+	$7
+)
 `
 
-func markCompleted(ctx context.Context, tx *sql.Tx, taskID uuid.UUID) error {
+func markCompleted(ctx context.Context, tx *sql.Tx, task Task) error {
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", markCompletedQuery),
-		slog.String("$1", taskID.String()),
+		slog.Any("task", task),
 	)
 
-	if _, err := tx.ExecContext(ctx, markCompletedQuery, taskID); err != nil {
+	if _, err := tx.ExecContext(ctx, markCompletedQuery,
+		task.ID,
+		task.Type,
+		task.Version,
+		task.Idempotent,
+		task.Payload,
+		task.CreatedAt,
+		task.UpdatedAt,
+	); err != nil {
 		return errors.Join(ErrExecQuery, err)
 	}
 
@@ -74,19 +140,19 @@ func markCompleted(ctx context.Context, tx *sql.Tx, taskID uuid.UUID) error {
 }
 
 var scheduleTaskQuery = `
-INSERT INTO ` + table[Task]() + ` (` + join(columns[Task](false,
-	"type",
-	"type_version",
-	"payload",
-	"idempotent",
-	"dispatch_after",
-)) + `)
+INSERT INTO task_scheduled_v2 (
+	type,
+	version,
+	payload,
+	idempotent,
+	dispatch_after
+)
 VALUES ($1, $2, $3, $4, $5)
 `
 
 func scheduleTask(ctx context.Context, db *sql.DB,
 	taskType string,
-	taskTypeVersion int,
+	version string,
 	payload json.RawMessage,
 	idempotent bool,
 	dispatchAfter time.Duration,
@@ -96,7 +162,7 @@ func scheduleTask(ctx context.Context, db *sql.DB,
 		slog.String("query", scheduleTaskQuery),
 		slog.Duration("dispatchAfter", dispatchAfter),
 		slog.String("$1", taskType),
-		slog.Int("$2", taskTypeVersion),
+		slog.String("$2", version),
 		slog.String("$3", string(payload)),
 		slog.Bool("$4", idempotent),
 		slog.Time("$5", dispatchTimestamp),
@@ -104,7 +170,7 @@ func scheduleTask(ctx context.Context, db *sql.DB,
 
 	if _, err := db.ExecContext(ctx, scheduleTaskQuery,
 		taskType,
-		taskTypeVersion,
+		version,
 		payload,
 		idempotent,
 		dispatchTimestamp,
@@ -116,35 +182,26 @@ func scheduleTask(ctx context.Context, db *sql.DB,
 }
 
 var deleteIdempotentQuery = `
-DELETE FROM ` + table[Task]() + `
+DELETE FROM task_scheduled_v2
 WHERE
-	` + column[Task]("type") + ` = $1 AND
-	` + column[Task]("type_version") + ` = $2 AND
-	` + column[Task]("payload") + `::TEXT = $3 AND
-	` + column[Task]("id") + ` != $4 AND
-	` + column[Task]("idempotent") + ` = TRUE AND
-	` + column[Task]("completed_at") + ` IS NULL
+	type = $1 AND
+	payload = $2::JSONB AND
+	idempotent = TRUE
 `
 
 func deleteIdempotent(ctx context.Context, tx *sql.Tx,
 	typ string,
-	typeVersion int,
 	payload json.RawMessage,
-	id_skip uuid.UUID,
 ) error {
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", deleteIdempotentQuery),
 		slog.String("$1", typ),
-		slog.Int("$2", typeVersion),
-		slog.String("$3", string(payload)),
-		slog.String("$4", id_skip.String()),
+		slog.String("$2", string(payload)),
 	)
 
 	if _, err := tx.ExecContext(ctx, deleteIdempotentQuery,
 		typ,
-		typeVersion,
 		payload,
-		id_skip,
 	); err != nil {
 		return errors.Join(ErrExecQuery, err)
 	}

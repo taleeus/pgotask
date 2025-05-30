@@ -1,15 +1,17 @@
-module github.com/taleeus/pgotask/integration
+module github.com/taleeus/pgotask/v2integration
 
-go 1.22.4
+go 1.23.0
 
-replace github.com/taleeus/pgotask => ..
+toolchain go1.24.1
+
+replace github.com/taleeus/pgotask/v2 => ..
 
 require (
 	github.com/jackc/pgx/v5 v5.7.1
-	github.com/taleeus/pgotask v0.0.0
+	github.com/taleeus/pgotask/v2 v2.0.0
 	github.com/testcontainers/testcontainers-go v0.33.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.33.0
-	golang.org/x/sync v0.10.0
+	golang.org/x/sync v0.13.0
 )
 
 require (

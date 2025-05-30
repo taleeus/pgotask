@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var lockTasksQuery = `LOCK ` + table[Task]()
+var lockTasksQuery = `LOCK task_scheduled_v2`
 
 func lockTasks(ctx context.Context, tx *sql.Tx) error {
 	slog.DebugContext(ctx, "Executing query",
@@ -23,40 +23,44 @@ func lockTasks(ctx context.Context, tx *sql.Tx) error {
 }
 
 var findPendingTasksQuery = `
-SELECT
-	` + join(columns[Task](false)) + `
-FROM ` + table[Task]() + `
+SELECT *
+FROM task_scheduled_v2
 WHERE
-	` + column[Task]("completed_at") + ` IS NULL AND
-	` + column[Task]("dispatch_after") + ` <= $1
-ORDER BY ` + column[Task]("dispatch_after")
+	dispatch_after <= $1 AND
+	(version >= $2 OR version IS NULL)
+ORDER BY
+	priority,
+	dispatch_after
+`
 
-func findPendingTasks(ctx context.Context, tx *sql.Tx) ([]Task, error) {
+func findPendingTasks(ctx context.Context, tx *sql.Tx, version sql.NullString) ([]TaskScheduled, error) {
 	now := time.Now()
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", findPendingTasksQuery),
 		slog.Time("$1", now),
+		slog.String("$2", version.String),
 	)
 
-	rows, err := tx.QueryContext(ctx, findPendingTasksQuery, now)
+	rows, err := tx.QueryContext(ctx, findPendingTasksQuery, now, version)
 	if err != nil {
 		return nil, errors.Join(ErrExecQuery, err)
 	}
 	defer rows.Close()
 
-	tasks := make([]Task, 0)
+	tasks := make([]TaskScheduled, 0)
 	for rows.Next() {
-		var task Task
+		var task TaskScheduled
 		if err := rows.Scan(
 			&task.ID,
 			&task.Type,
-			&task.TypeVersion,
-			&task.Payload,
+			&task.Version,
 			&task.Idempotent,
-			&task.DispatchAfter,
-			&task.CompletedAt,
+			&task.Payload,
 			&task.CreatedAt,
 			&task.UpdatedAt,
+			&task.DispatchAfter,
+			&task.Priority,
+			&task.Retries,
 		); err != nil {
 			return nil, errors.Join(ErrScanRow, err)
 		}

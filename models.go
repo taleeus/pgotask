@@ -8,27 +8,41 @@ import (
 )
 
 type Task struct {
-	ID            uuid.UUID    `db:"id"`
-	Type          string       `db:"type"`
-	TypeVersion   int          `db:"type_version"`
-	Payload       []byte       `db:"payload"`
-	Idempotent    bool         `db:"idempotent"`
-	DispatchAfter sql.NullTime `db:"dispatch_after"`
-	CompletedAt   sql.NullTime `db:"completed_at"`
-	CreatedAt     time.Time    `db:"created_at"`
-	UpdatedAt     time.Time    `db:"updated_at"`
+	ID         uuid.UUID      `db:"id"`
+	Type       string         `db:"type"`
+	Version    sql.NullString `db:"version"`
+	Idempotent bool           `db:"idempotent"`
+	Payload    []byte         `db:"payload"`
+	CreatedAt  time.Time      `db:"created_at"`
+	UpdatedAt  time.Time      `db:"updated_at"`
 }
 
-func (Task) TableName() string {
-	return "task_" + VERSION
+type TaskScheduled struct {
+	Task
+	DispatchAfter time.Time `db:"dispatch_after"`
+	Priority      int       `db:"priority"`
+	Retries       int       `db:"retries"`
 }
 
-type TaskFailure struct {
-	TaskID    uuid.UUID `db:"task_id"`
-	Message   string    `db:"message"`
-	CreatedAt time.Time `db:"created_at"`
+func (TaskScheduled) ModelName() string {
+	return "task_scheduled_" + VERSION
 }
 
-func (TaskFailure) TableName() string {
-	return "task_failure_" + VERSION
+type TaskCompleted struct {
+	Task
+	CompletedAt time.Time `db:"completed_at"`
+}
+
+func (TaskCompleted) ModelName() string {
+	return "task_completed_" + VERSION
+}
+
+type TaskDead struct {
+	Task
+	Error    string    `db:"error"`
+	FailedAt time.Time `db:"failed_at"`
+}
+
+func (TaskDead) ModelName() string {
+	return "task_dead_" + VERSION
 }
