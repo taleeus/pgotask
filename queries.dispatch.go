@@ -29,8 +29,8 @@ WHERE
 	dispatch_after <= $1 AND
 	(version >= $2 OR version IS NULL)
 ORDER BY
-	priority,
-	dispatch_after
+	priority DESC,
+	dispatch_after ASC
 `
 
 func findPendingTasks(ctx context.Context, tx *sql.Tx, version sql.NullString) ([]TaskScheduled, error) {

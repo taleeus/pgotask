@@ -125,11 +125,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 type TaskArgs struct {
-	TaskType        string          `json:"taskType"`
-	TaskTypeVersion int             `json:"taskTypeVersion"`
-	Payload         json.RawMessage `json:"payload"`
-	Idempotent      bool            `json:"idempotent"`
-	DispatchAfter   time.Duration   `json:"dispatchAfter"`
+	TaskType      string          `json:"taskType"`
+	Payload       json.RawMessage `json:"payload"`
+	Idempotent    bool            `json:"idempotent"`
+	DispatchAfter time.Duration   `json:"dispatchAfter"`
 }
 
 // ScheduleTask schedules a task (duh)
