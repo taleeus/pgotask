@@ -27,7 +27,7 @@ SELECT *
 FROM task_scheduled_v2
 WHERE
 	dispatch_after <= $1 AND
-	(version >= $2 OR version IS NULL)
+	(version <= $2 OR version IS NULL)
 ORDER BY
 	priority DESC,
 	dispatch_after ASC
