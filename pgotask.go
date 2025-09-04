@@ -133,11 +133,6 @@ type TaskArgs struct {
 
 // ScheduleTask schedules a task (duh)
 func (s *Scheduler) ScheduleTask(ctx context.Context, task TaskArgs) error {
-	if !s.running {
-		slog.WarnContext(ctx, "Scheduler is not running")
-		return ErrNotRunning
-	}
-
 	var version sql.NullString
 	if s.version != "" {
 		version = sql.NullString{String: s.version, Valid: true}

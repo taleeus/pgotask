@@ -17,7 +17,6 @@ var ErrScanRow = errors.New("couldn't scan row")
 /// Fatal
 
 var ErrAlreadyRunning = errors.New("scheduler already running")
-var ErrNotRunning = errors.New("scheduler is not running")
 var ErrInitSchema = errors.New("couldn't init db schema")
 var ErrQueryPending = errors.New("couldn't query pending tasks")
 var ErrQueryLock = errors.New("couldn't lock tasks")
