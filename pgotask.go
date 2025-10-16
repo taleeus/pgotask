@@ -118,8 +118,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return errors.Join(ErrInitSchema, err)
 	}
 
-	go s.dispatchLoop(ctx)
 	s.running = true
+	go s.dispatchLoop(ctx)
 
 	return nil
 }
@@ -167,7 +167,7 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
-	for {
+	for s.running {
 		slog.DebugContext(ctx, "Entered dispatch loop; waiting for event")
 		select {
 		case <-time.After(s.cooldown):
@@ -187,7 +187,6 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 			)
 
 			s.running = false
-			return
 
 		case sig := <-sigint:
 			slog.InfoContext(ctx, "Scheduler stopped by interruption signal",
@@ -195,7 +194,6 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 			)
 
 			s.running = false
-			return
 		}
 	}
 }
@@ -225,19 +223,19 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 	)
 
 	tasks = slices.CompactFunc(tasks, func(t1, t2 TaskScheduled) bool {
-		if !t1.Idempotent || t2.Idempotent {
+		if !t1.Idempotent || !t2.Idempotent {
 			return false
 		}
 
-		return t1.Type == t2.Type && bytes.Compare(t1.Payload, t2.Payload) == 0
+		return t1.Type == t2.Type && bytes.Equal(t1.Payload, t2.Payload)
 	})
 	slog.DebugContext(ctx, "Filtered tasks",
 		slog.Any("tasks", tasks),
 	)
 
-	dispatchGroup, dispatchCtx := errgroup.WithContext(ctx)
+	var dispatchGroup errgroup.Group
 	for _, task := range tasks {
-		slog.DebugContext(dispatchCtx, "Dispatching",
+		slog.DebugContext(ctx, "Dispatching",
 			slog.Any("task", task),
 		)
 
@@ -247,11 +245,11 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				return fmt.Errorf("%w (%s)", ErrUnhandledTaskType, task.Type)
 			}
 
-			deadlineCtx, cancel := context.WithTimeoutCause(dispatchCtx, s.taskDeadline, ErrExcededTimeline)
+			deadlineCtx, cancel := context.WithTimeoutCause(ctx, s.taskDeadline, ErrExcededTimeline)
 			defer cancel()
 
 			if err := handler(deadlineCtx, tx, task.Payload); err != nil {
-				slog.DebugContext(dispatchCtx, "Handler failed task",
+				slog.DebugContext(ctx, "Handler failed task",
 					slog.Any("task", task),
 					slog.String("err", err.Error()),
 					slog.Duration("retryCooldown", s.retryCooldown),
@@ -259,32 +257,32 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 
 				switch {
 				case task.Retries >= s.retries:
-					if err := pushFailure(dispatchCtx, tx, task.Task, err.Error()); err != nil {
+					if err := pushFailure(ctx, tx, task.Task, err.Error()); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrPushFailure, task.ID)
 					}
 
-					if err := deleteTask(dispatchCtx, tx, task.ID); err != nil {
+					if err := deleteTask(ctx, tx, task.ID); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrDeleteScheduled, task.ID)
 					}
 
 				default:
-					if err := setRetryCooldown(dispatchCtx, tx, task.ID, s.retryCooldown); err != nil {
+					if err := setRetryCooldown(ctx, tx, task.ID, s.retryCooldown); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrRetryCooldown, task.ID)
 					}
 				}
 			} else {
-				slog.DebugContext(dispatchCtx, "Handler completed task",
+				slog.DebugContext(ctx, "Handler completed task",
 					slog.Any("task", task),
 				)
 
-				if err := markCompleted(dispatchCtx, tx, task.Task); err != nil {
+				if err := markCompleted(ctx, tx, task.Task); err != nil {
 					return errors.Join(ErrAbortDispatch,
 						fmt.Errorf("%w (id: %s)", ErrMarkCompleted, task.ID),
 						err,
 					)
 				}
 
-				if err := deleteTask(dispatchCtx, tx, task.ID); err != nil {
+				if err := deleteTask(ctx, tx, task.ID); err != nil {
 					return errors.Join(ErrAbortDispatch,
 						fmt.Errorf("%w (id: %s)", ErrDeleteScheduled, task.ID),
 						err,
@@ -292,8 +290,8 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				}
 
 				if task.Idempotent {
-					slog.DebugContext(dispatchCtx, "Task is idempotent: deleting duplicate tasks")
-					if err := deleteIdempotent(dispatchCtx, tx,
+					slog.DebugContext(ctx, "Task is idempotent: deleting duplicate tasks")
+					if err := deleteIdempotent(ctx, tx,
 						task.Type,
 						task.Payload,
 					); err != nil {
