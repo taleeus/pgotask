@@ -157,7 +157,7 @@ func scheduleTask(ctx context.Context, db *sql.DB,
 	idempotent bool,
 	dispatchAfter time.Duration,
 ) error {
-	dispatchTimestamp := time.Now().Add(dispatchAfter)
+	dispatchTimestamp := time.Now().UTC().Add(dispatchAfter)
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", scheduleTaskQuery),
 		slog.Duration("dispatchAfter", dispatchAfter),

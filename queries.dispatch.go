@@ -34,7 +34,7 @@ ORDER BY
 `
 
 func findPendingTasks(ctx context.Context, tx *sql.Tx, version sql.NullString) ([]TaskScheduled, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", findPendingTasksQuery),
 		slog.Time("$1", now),
