@@ -8,12 +8,12 @@ import (
 	"strings"
 )
 
-var initExtensionsQuery = `
+var initExtensionsQuery = /* sql */ `
 CREATE EXTENSION IF NOT EXISTS "moddatetime";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 `
 
-var initTaskScheduledTableQuery = `
+var initTaskScheduledTableQuery = /* sql */ `
 CREATE COLLATION IF NOT EXISTS en_natural (
   LOCALE = 'en-US-u-kn-true',
   PROVIDER = 'icu'
@@ -46,7 +46,7 @@ CREATE OR REPLACE TRIGGER mdt_task_scheduled_v2
 	EXECUTE PROCEDURE moddatetime (updated_at);
 `
 
-var initTaskDeadTableQuery = `
+var initTaskDeadTableQuery = /* sql */ `
 CREATE TABLE IF NOT EXISTS task_dead_v2 (
 	id 				UUID 		NOT NULL 	PRIMARY KEY,
 	type 			TEXT 		NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS task_dead_v2 (
 );
 `
 
-var initTaskCompletedTableQuery = `
+var initTaskCompletedTableQuery = /* sql */ `
 CREATE TABLE IF NOT EXISTS task_completed_v2 (
 	id 				UUID 		NOT NULL	PRIMARY KEY,
 	type 			TEXT 		NOT NULL,

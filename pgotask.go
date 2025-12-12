@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,10 +20,12 @@ import (
 
 const VERSION = "v2"
 
-const COOLDOWN_DEFAULT = time.Duration(time.Minute)
+const LOCK_TIMEOUT_MIN_DEFAULT = 5
+const COOLDOWN_DEFAULT = time.Minute
 const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
 const TASK_DEADLINE_DEFAULT = time.Minute
 const TASK_RETRIES_DEFAULT = 5
+const TASK_LIMIT_DEFAULT = 10
 
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -37,11 +40,13 @@ type Scheduler struct {
 	db       *sql.DB
 	handlers map[string]HandlerFn
 
-	cooldown      time.Duration
-	retryCooldown time.Duration
-	taskDeadline  time.Duration
-	retries       int
-	version       string
+	cooldown       time.Duration
+	lockTimeoutMin uint
+	retryCooldown  time.Duration
+	taskDeadline   time.Duration
+	taskLimit      uint
+	retries        int
+	version        string
 }
 
 // NewScheduler returns an initialized scheduler.
@@ -53,16 +58,24 @@ func NewScheduler(db *sql.DB) *Scheduler {
 		db:       db,
 		handlers: make(map[string]HandlerFn),
 
-		cooldown:      COOLDOWN_DEFAULT,
-		retryCooldown: RETRY_COOLDOWN_DEFAULT,
-		taskDeadline:  TASK_DEADLINE_DEFAULT,
-		retries:       TASK_RETRIES_DEFAULT,
+		cooldown:       COOLDOWN_DEFAULT,
+		lockTimeoutMin: LOCK_TIMEOUT_MIN_DEFAULT,
+		retryCooldown:  RETRY_COOLDOWN_DEFAULT,
+		taskDeadline:   TASK_DEADLINE_DEFAULT,
+		retries:        TASK_RETRIES_DEFAULT,
+		taskLimit:      TASK_LIMIT_DEFAULT,
 	}
 }
 
 // Cooldown overrides the default cooldown between loops
 func (s *Scheduler) Cooldown(cooldown time.Duration) *Scheduler {
 	s.cooldown = cooldown
+	return s
+}
+
+// LockTimeout overrides the default lock timeout duration (in minutes)
+func (s *Scheduler) LockTimeout(timeoutMin uint) *Scheduler {
+	s.lockTimeoutMin = timeoutMin
 	return s
 }
 
@@ -88,6 +101,12 @@ func (s *Scheduler) Version(version string) *Scheduler {
 // Retries overrides the default task retries
 func (s *Scheduler) Retries(retries int) *Scheduler {
 	s.retries = retries
+	return s
+}
+
+// TaskLimit overrides the default task limit
+func (s *Scheduler) TaskLimit(limit uint) *Scheduler {
+	s.taskLimit = limit
 	return s
 }
 
@@ -205,7 +224,7 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 
-	if err := lockTasks(ctx, tx); err != nil {
+	if err := lockTasks(ctx, tx, s.lockTimeoutMin); err != nil {
 		return errors.Join(ErrQueryLock, err)
 	}
 
@@ -214,8 +233,13 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 		version = sql.NullString{String: s.version, Valid: true}
 	}
 
-	tasks, err := findPendingTasks(ctx, tx, version)
+	tasks, err := findPendingTasks(ctx, tx, version, s.taskLimit)
 	if err != nil {
+		if strings.Contains(err.Error(), "could not obtain lock") {
+			slog.InfoContext(ctx, "Could not obtain lock on table (another instance is running?); skipping loop")
+			return nil
+		}
+
 		return errors.Join(ErrQueryPending, err)
 	}
 	slog.DebugContext(ctx, "Fetched pending tasks",

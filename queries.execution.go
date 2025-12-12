@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var pushFailureQuery = `
+var pushFailureQuery = /* sql */ `
 INSERT INTO task_dead_v2 (
 	id,
 	type,
@@ -34,7 +34,7 @@ VALUES (
 )
 `
 
-var deleteTaskQuery = `
+var deleteTaskQuery = /* sql */ `
 DELETE FROM task_scheduled_v2
 WHERE id = $1
 `
@@ -75,7 +75,7 @@ func deleteTask(ctx context.Context, tx *sql.Tx, id uuid.UUID) error {
 	return nil
 }
 
-var setRetryCooldownQuery = `
+var setRetryCooldownQuery = /* sql */ `
 UPDATE task_scheduled_v2
 SET
 	dispatch_after = $2,
@@ -98,7 +98,7 @@ func setRetryCooldown(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, cooldow
 	return nil
 }
 
-var markCompletedQuery = `
+var markCompletedQuery = /* sql */ `
 INSERT INTO task_completed_v2 (
 	id,
 	type,
@@ -139,7 +139,7 @@ func markCompleted(ctx context.Context, tx *sql.Tx, task Task) error {
 	return nil
 }
 
-var scheduleTaskQuery = `
+var scheduleTaskQuery = /* sql */ `
 INSERT INTO task_scheduled_v2 (
 	type,
 	version,
@@ -181,7 +181,7 @@ func scheduleTask(ctx context.Context, db *sql.DB,
 	return nil
 }
 
-var deleteIdempotentQuery = `
+var deleteIdempotentQuery = /* sql */ `
 DELETE FROM task_scheduled_v2
 WHERE
 	type = $1 AND
