@@ -99,10 +99,11 @@ func TestMain(m *testing.M) {
 		Handler(TASK_TYPE_NOPAYLOAD, pgotask.Simple(incrementCounterNoPayload)).
 		Handler(TASK_TYPE_IDEMPOTENT, pgotask.TypedNoDB(incrementCounterIdempotent))
 
+	if err := s1.Run(ctx); err != nil {
+		log.Fatal(err)
+	}
+
 	var runGroup errgroup.Group
-	runGroup.Go(func() error {
-		return s1.Run(ctx)
-	})
 	runGroup.Go(func() error {
 		return s2.Run(ctx)
 	})

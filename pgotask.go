@@ -235,8 +235,8 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 
 	tasks, err := findPendingTasks(ctx, tx, version, s.taskLimit)
 	if err != nil {
-		if strings.Contains(err.Error(), "could not obtain lock") {
-			slog.InfoContext(ctx, "Could not obtain lock on table (another instance is running?); skipping loop")
+		if strings.Contains(err.Error(), "55P03") {
+			slog.InfoContext(ctx, "Could not obtain lock on task rows (another instance is running?); skipping loop")
 			return nil
 		}
 
