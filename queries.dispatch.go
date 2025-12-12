@@ -10,7 +10,7 @@ import (
 )
 
 var setLockTimeoutQuery = /* sql */ `SET LOCAL lock_timeout = '%dmin'`
-var lockTasksQuery = /* sql */ `LOCK task_scheduled_v2 IN EXCLUSIVE MODE`
+var lockTasksQuery = /* sql */ `LOCK task_scheduled_v2 IN ROW EXCLUSIVE MODE`
 
 func lockTasks(ctx context.Context, tx *sql.Tx, lockTimeoutMin uint) error {
 	slog.DebugContext(ctx, "Executing query",
