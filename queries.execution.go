@@ -84,7 +84,7 @@ WHERE id = $1
 `
 
 func setRetryCooldown(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, cooldown time.Duration) error {
-	dispatchAfter := time.Now().Add(cooldown)
+	dispatchAfter := time.Now().UTC().Add(cooldown)
 	slog.DebugContext(ctx, "Executing query",
 		slog.String("query", setRetryCooldownQuery),
 		slog.String("$1", taskID.String()),
