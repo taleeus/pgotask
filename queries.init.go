@@ -9,12 +9,12 @@ import (
 )
 
 var initExtensionsQuery = /* sql */ `
-CREATE EXTENSION "moddatetime";
-CREATE EXTENSION "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "moddatetime";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 `
 
 var initTaskScheduledTableQuery = /* sql */ `
-CREATE COLLATION en_natural (
+CREATE COLLATION IF NOT EXISTS en_natural (
   LOCALE = 'en-US-u-kn-true',
   PROVIDER = 'icu'
 );
