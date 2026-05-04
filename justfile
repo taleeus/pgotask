@@ -1,3 +1,3 @@
 [working-directory('integration')]
-test:
-    @go test
+@test:
+    go test

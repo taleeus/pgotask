@@ -20,12 +20,13 @@ import (
 
 const VERSION = "v2"
 
-const LOCK_TIMEOUT_MIN_DEFAULT = 5
 const COOLDOWN_DEFAULT = time.Minute
-const RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
+const LOCK_TIMEOUT_MIN_DEFAULT = 5
+const TASK_LIMIT_DEFAULT = 10
+
+const TASK_RETRY_COOLDOWN_DEFAULT = time.Duration(5 * time.Minute)
 const TASK_DEADLINE_DEFAULT = time.Minute
 const TASK_RETRIES_DEFAULT = 5
-const TASK_LIMIT_DEFAULT = 10
 
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -34,19 +35,30 @@ type DB interface {
 
 type HandlerFn func(context.Context, DB, json.RawMessage) error
 
+type taskHandler struct {
+	fn HandlerFn
+	HandlerConfig
+}
+
+type HandlerConfig struct {
+	RetryCooldown time.Duration
+	Deadline      time.Duration
+	Retries       int
+	DeathFn       func(ctx context.Context, task TaskScheduled, err error) error
+}
+
 type Scheduler struct {
 	running bool
 
 	db       *sql.DB
-	handlers map[string]HandlerFn
+	handlers map[string]taskHandler
 
+	version        string
 	cooldown       time.Duration
 	lockTimeoutMin uint
-	retryCooldown  time.Duration
-	taskDeadline   time.Duration
 	taskLimit      uint
-	retries        int
-	version        string
+
+	handlerConfig HandlerConfig
 }
 
 // NewScheduler returns an initialized scheduler.
@@ -56,15 +68,26 @@ type Scheduler struct {
 func NewScheduler(db *sql.DB) *Scheduler {
 	return &Scheduler{
 		db:       db,
-		handlers: make(map[string]HandlerFn),
+		handlers: make(map[string]taskHandler),
 
 		cooldown:       COOLDOWN_DEFAULT,
 		lockTimeoutMin: LOCK_TIMEOUT_MIN_DEFAULT,
-		retryCooldown:  RETRY_COOLDOWN_DEFAULT,
-		taskDeadline:   TASK_DEADLINE_DEFAULT,
-		retries:        TASK_RETRIES_DEFAULT,
 		taskLimit:      TASK_LIMIT_DEFAULT,
+
+		handlerConfig: HandlerConfig{
+			RetryCooldown: TASK_RETRY_COOLDOWN_DEFAULT,
+			Deadline:      TASK_DEADLINE_DEFAULT,
+			Retries:       TASK_RETRIES_DEFAULT,
+			DeathFn:       func(_ context.Context, _ TaskScheduled, _ error) error { return nil },
+		},
 	}
+}
+
+// Version sets the filter for versioned tasks.
+// The idiomatic way to use this is to pass the current Go package version.
+func (s *Scheduler) Version(version string) *Scheduler {
+	s.version = version
+	return s
 }
 
 // Cooldown overrides the default cooldown between loops
@@ -79,35 +102,55 @@ func (s *Scheduler) LockTimeout(timeoutMin uint) *Scheduler {
 	return s
 }
 
-// RetryAfter overrides the default retry cooldown set on tasks after failure
-func (s *Scheduler) RetryAfter(retryCooldown time.Duration) *Scheduler {
-	s.retryCooldown = retryCooldown
-	return s
-}
-
-// TaskDeadline overrides the default task deadline
-func (s *Scheduler) TaskDeadline(deadline time.Duration) *Scheduler {
-	s.taskDeadline = deadline
-	return s
-}
-
-// Version sets the filter for versioned tasks.
-// The idiomatic way to use this is to pass the current Go package version.
-func (s *Scheduler) Version(version string) *Scheduler {
-	s.version = version
-	return s
-}
-
-// Retries overrides the default task retries
-func (s *Scheduler) Retries(retries int) *Scheduler {
-	s.retries = retries
-	return s
-}
-
 // TaskLimit overrides the default task limit
 func (s *Scheduler) TaskLimit(limit uint) *Scheduler {
 	s.taskLimit = limit
 	return s
+}
+
+// RetryAfter overrides the default retry cooldown set on tasks after failure
+//
+// Deprecated: Use [Scheduler.DefaultHandlerConfig].
+func (s *Scheduler) RetryAfter(retryCooldown time.Duration) *Scheduler {
+	s.handlerConfig.RetryCooldown = retryCooldown
+	return s
+}
+
+// TaskDeadline overrides the default task deadline
+//
+// Deprecated: Use [Scheduler.DefaultHandlerConfig].
+func (s *Scheduler) TaskDeadline(deadline time.Duration) *Scheduler {
+	s.handlerConfig.Deadline = deadline
+	return s
+}
+
+// Retries overrides the default task retries
+//
+// Deprecated: Use [Scheduler.DefaultHandlerConfig].
+func (s *Scheduler) Retries(retries int) *Scheduler {
+	s.handlerConfig.Retries = retries
+	return s
+}
+
+// DefaultHandlerConfig overrides the default handler parameters.
+// To set the parameters at the handler scope, use [Scheduler.HandlerConfig].
+func (s *Scheduler) DefaultHandlerConfig(config HandlerConfig) *Scheduler {
+	s.handlerConfig = config
+	return s
+}
+
+// HandlerConfig sets the handler parameters.
+// If the handler is not present, a false bool flag is returned.
+func (s *Scheduler) HandlerConfig(handlerName string, config HandlerConfig) (*Scheduler, bool) {
+	handler, ok := s.handlers[handlerName]
+	if !ok {
+		return s, false
+	}
+
+	handler.HandlerConfig = config
+	s.handlers[handlerName] = handler
+
+	return s, true
 }
 
 // Handler registers a callback for the given task type.
@@ -116,7 +159,16 @@ func (s *Scheduler) TaskLimit(limit uint) *Scheduler {
 //
 // Handlers can check context cancellation to know if an error happened
 // during the dispatch loop on some other task.
-func (s *Scheduler) Handler(taskType string, handler HandlerFn) *Scheduler {
+func (s *Scheduler) Handler(taskType string, handlerFn HandlerFn, config ...HandlerConfig) *Scheduler {
+	handler := taskHandler{
+		fn:            handlerFn,
+		HandlerConfig: s.handlerConfig,
+	}
+
+	if len(config) == 1 {
+		handler.HandlerConfig = config[0]
+	}
+
 	s.handlers[taskType] = handler
 	return s
 }
@@ -269,19 +321,20 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 				return fmt.Errorf("%w (%s)", ErrUnhandledTaskType, task.Type)
 			}
 
-			deadlineCtx, cancel := context.WithTimeoutCause(ctx, s.taskDeadline, ErrExcededTimeline)
+			deadlineCtx, cancel := context.WithTimeoutCause(ctx, handler.Deadline, ErrExcededTimeline)
 			defer cancel()
 
-			if err := handler(deadlineCtx, tx, task.Payload); err != nil {
+			if err := handler.fn(deadlineCtx, tx, task.Payload); err != nil {
 				slog.DebugContext(ctx, "Handler failed task",
 					slog.Any("task", task),
 					slog.String("err", err.Error()),
-					slog.Duration("retryCooldown", s.retryCooldown),
+					slog.Duration("retryCooldown", handler.RetryCooldown),
 				)
 
 				switch {
-				case task.Retries >= s.retries:
-					if err := pushFailure(ctx, tx, task.Task, err.Error()); err != nil {
+				case task.Retries >= handler.Retries:
+					taskErr := err
+					if err := pushFailure(ctx, tx, task.Task, taskErr.Error()); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrPushFailure, task.ID)
 					}
 
@@ -289,8 +342,14 @@ func (s Scheduler) dispatch(ctx context.Context) error {
 						return fmt.Errorf("%w (id: %s)", ErrDeleteScheduled, task.ID)
 					}
 
+					if err := handler.DeathFn(ctx, task, taskErr); err != nil {
+						slog.ErrorContext(ctx, "Death callback failed",
+							slog.String("err", err.Error()),
+						)
+					}
+
 				default:
-					if err := setRetryCooldown(ctx, tx, task.ID, s.retryCooldown); err != nil {
+					if err := setRetryCooldown(ctx, tx, task.ID, handler.RetryCooldown); err != nil {
 						return fmt.Errorf("%w (id: %s)", ErrRetryCooldown, task.ID)
 					}
 				}
